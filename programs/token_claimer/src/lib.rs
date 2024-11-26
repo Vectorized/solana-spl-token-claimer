@@ -6,7 +6,7 @@ use anchor_lang::solana_program::account_info::AccountInfo as SolanaAccountInfo;
 
 pub mod utils;
 
-declare_id!("BT9KtHpp84B2AJmLHg3cBAnqP2cc8cNjQ8UV4kL3NEcQ");
+declare_id!("DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4");
 
 const OWNER_OFFSET: usize = 8; // Skip discriminator (8 bytes).
 const CLAIM_SIGNER_OFFSET: usize = OWNER_OFFSET + 32; // Skip 32 bytes.
