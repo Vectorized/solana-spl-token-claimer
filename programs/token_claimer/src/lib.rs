@@ -6,7 +6,7 @@ use anchor_lang::solana_program::account_info::AccountInfo as SolanaAccountInfo;
 
 pub mod utils;
 
-declare_id!("BT9KtHpp84B2AJmLHg3cBAnqP2cc8cNjQ8UV4kL3NEcQ");
+declare_id!("DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4");
 
 const OWNER_OFFSET: usize = 8; // Skip discriminator (8 bytes).
 const CLAIM_SIGNER_OFFSET: usize = OWNER_OFFSET + 32; // Skip 32 bytes.
@@ -105,12 +105,13 @@ pub mod token_claimer {
     /// Process a claim for tokens with a valid signature.
     pub fn claim(
         ctx: Context<Claim>,
+        ed25519_instruction_index: u32,
         claim_index: u64,
         amount: u64,
         signature: [u8; 64]
     ) -> Result<()> {
         let solana_account_info: SolanaAccountInfo = ctx.accounts.ix_sysvar.to_account_info();
-        let ix: Instruction = load_instruction_at_checked(0, &solana_account_info)
+        let ix: Instruction = load_instruction_at_checked(ed25519_instruction_index.try_into().unwrap(), &solana_account_info)
             .map_err(|_| CustomError::InvalidSignature)?;
 
         // Check if the claim index has already been processed.
@@ -127,11 +128,11 @@ pub mod token_claimer {
         );
 
         // Construct the message for hashing.
-        let mut message = Vec::with_capacity(80);
-        message.extend_from_slice(&claim_index.to_be_bytes());
-        message.extend_from_slice(&ctx.accounts.claimer.key().to_bytes());
-        message.extend_from_slice(&ctx.accounts.source_token_account.key().to_bytes());
-        message.extend_from_slice(&amount.to_be_bytes());
+        let mut message = Vec::with_capacity(8 + 32 + 32 + 8);
+        message.extend_from_slice(&claim_index.to_be_bytes()); // 8 bytes.
+        message.extend_from_slice(&ctx.accounts.source_token_account.key().to_bytes()); // 32 bytes.
+        message.extend_from_slice(&ctx.accounts.destination_token_account.key().to_bytes()); // 32 bytes.
+        message.extend_from_slice(&amount.to_be_bytes()); // 8 bytes.
 
         let public_key_bytes = ctx.accounts.state.claim_signer.to_bytes();
         require!(utils::verify_ed25519_ix(&ix, &public_key_bytes, &message, &signature), CustomError::InvalidSignature);
@@ -140,8 +141,6 @@ pub mod token_claimer {
         ctx.accounts.state.claimed_bitmap[byte_index] |= bit_mask;
 
         // Transfer the tokens.
-        // Note: we don't check that `destination_token_account` is owned by `claimer`,
-        // to allow the flexibility of transferring to a destination of `claimer's` choice.
         // Ensure there are enough tokens in the source account.
         require!(
             ctx.accounts.source_token_account.amount >= amount,
@@ -291,7 +290,8 @@ pub struct Claim<'info> {
     #[account(mut)]
     pub source_token_account: Account<'info, TokenAccount>,
     #[account(mut)]
-    pub destination_token_account: Account<'info, TokenAccount>,
+    /// CHECK: The destination account for the tokens. Might not exist yet.
+    pub destination_token_account: AccountInfo<'info>,
     #[account(
         seeds = [b"delegate", source_token_account.key().as_ref()],
         bump

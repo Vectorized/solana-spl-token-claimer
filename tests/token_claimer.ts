@@ -2,7 +2,17 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { TokenClaimer } from "../target/types/token_claimer";
 import { PublicKey, SystemProgram, Keypair } from "@solana/web3.js";
-import { Token, TOKEN_PROGRAM_ID, createMint, createAccount, createAssociatedTokenAccount,getAssociatedTokenAddress, mintTo, getAccount } from "@solana/spl-token";
+import { 
+  Token, 
+  TOKEN_PROGRAM_ID, 
+  createMint, 
+  createAccount, 
+  createAssociatedTokenAccount,
+  getAssociatedTokenAddress, 
+  mintTo, 
+  getAccount, 
+  createAssociatedTokenAccountIdempotentInstruction 
+} from "@solana/spl-token";
 import { assert, expect } from "chai";
 import * as nacl from "tweetnacl";
 
@@ -21,7 +31,6 @@ describe("token_claimer", () => {
   let stateAccount = Keypair.generate();
   let mint: PublicKey;
   let sourceTokenAccount: PublicKey;
-  let destinationTokenAccount: PublicKey;
 
   const stripHexPrefix = s => s.replace(/^0[xX]/, '');
 
@@ -183,10 +192,8 @@ describe("token_claimer", () => {
       owner.publicKey
     );
 
-    destinationTokenAccount = await createAssociatedTokenAccount(
-      provider.connection,
-      owner,
-      mint,
+    const expectedDestinationTokenAccount = await getAssociatedTokenAddress(
+      mint, 
       destination.publicKey
     );
     
@@ -199,8 +206,8 @@ describe("token_claimer", () => {
     // Generate a mock signature for the claim
     const message = Buffer.concat([
       claimIndex.toArrayLike(Buffer, "be", 8),
-      claimer.publicKey.toBuffer(),
       sourceTokenAccount.toBuffer(),
+      expectedDestinationTokenAccount.toBuffer(), 
       amount.toArrayLike(Buffer, "be", 8),
     ]);
     console.log("Message:", message.length, message.toString("hex"));
@@ -216,12 +223,12 @@ describe("token_claimer", () => {
     const sourceAccountInfo = await getAccount(provider.connection, sourceTokenAccount);
 
     // Fetch the destination token account details
-    const destinationAccountInfo = await getAccount(provider.connection, destinationTokenAccount);
+    // const destinationAccountInfo = await getAccount(provider.connection, destinationTokenAccount);
 
     
     // Print the owner of each token account
     console.log("Source Token Account Owner:", sourceAccountInfo.owner.toString());
-    console.log("Destination Token Account Owner:", destinationAccountInfo.owner.toString());
+    // console.log("Destination Token Account Owner:", destinationAccountInfo.owner.toString());
     console.log("S:", owner.publicKey.toString());
     console.log("D:", destination.publicKey.toString());
 
@@ -254,40 +261,44 @@ describe("token_claimer", () => {
       })
       .signers([owner])
       .rpc();
-
-    console.log("Destination Token Account Balance (before transfer):", 
-      await getSplTokenBalance(provider.connection, destination.publicKey, mint)
-    );
     
-    await program.methods
-      .claim(claimIndex, amount, signature)
-      .accounts({
-        state: stateAccount.publicKey,
-        claimer: claimer.publicKey,
-        sourceTokenAccount: sourceTokenAccount,
-        destinationTokenAccount: destinationTokenAccount,
-        ixSysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-      })
-      .preInstructions([
-        anchor.web3.Ed25519Program.createInstructionWithPublicKey({
-          publicKey: claimSigner.publicKey.toBytes(),
-          message: message,
-          signature: signature,
+    try {
+      // await createAssociatedTokenAccount(
+      //   provider.connection,
+      //   owner,
+      //   mint,
+      //   destination.publicKey
+      // );
+      const ed25519InstructionIndex = new anchor.BN(0);
+      await program.methods
+        .claim(ed25519InstructionIndex, claimIndex, amount, signature)
+        .accounts({
+          state: stateAccount.publicKey,
+          claimer: claimer.publicKey,
+          sourceTokenAccount: sourceTokenAccount,
+          destinationTokenAccount: expectedDestinationTokenAccount,
+          ixSysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
         })
-      ])
-      .signers([claimer])
-      .rpc();
-
-    // await program.methods
-    //   .withdraw(amount)
-    //   .accounts({
-    //     state: stateAccount.publicKey,
-    //     owner: owner.publicKey,
-    //     sourceTokenAccount: sourceTokenAccount,
-    //     destinationTokenAccount: destinationTokenAccount,
-    //   })
-    //   .signers([owner])
-    //   .rpc();
+        .preInstructions([
+          anchor.web3.Ed25519Program.createInstructionWithPublicKey({
+            publicKey: claimSigner.publicKey.toBytes(),
+            message: message,
+            signature: signature,
+          }),
+          createAssociatedTokenAccountIdempotentInstruction(
+            claimer.publicKey,
+            expectedDestinationTokenAccount,
+            destination.publicKey, 
+            mint 
+          ),
+          
+        ])
+        .signers([claimer])
+        .rpc();
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
     
     console.log("Destination Token Account Balance (after transfer):", 
       await getSplTokenBalance(provider.connection, destination.publicKey, mint)
