@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Solana Phantom Wallet</title>
+  <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.js"></script>
+</head>
+<body>
+  <h1>Sign and Submit Solana Transaction with Phantom</h1>
+  <button id="connect-wallet">Connect Phantom Wallet</button>
+  <button id="send-transaction" disabled>Sign and Submit Transaction</button>
+  <pre id="output"></pre>
+
+  <script>
+    function decodeBase64ToUint8Array(base64String) {
+      const binaryString = atob(base64String);
+      const binaryLength = binaryString.length;
+      const bytes = new Uint8Array(binaryLength);
+      for (let i = 0; i < binaryLength; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return bytes;
+    }
+    (async function () {
+      const connectButton = document.getElementById("connect-wallet");
+      const sendButton = document.getElementById("send-transaction");
+      const output = document.getElementById("output");
+
+      let provider = null;
+      let walletPublicKey = null;
+
+      // Connect Phantom Wallet
+      connectButton.addEventListener("click", async () => {
+        provider = window.solana;
+
+        if (!provider || !provider.isPhantom) {
+          output.textContent = "Phantom wallet not found. Please install it.";
+          return;
+        }
+
+        await provider.connect();
+        walletPublicKey = provider.publicKey;
+
+        output.textContent = `Connected wallet: ${walletPublicKey.toBase58()}`;
+        sendButton.disabled = false;
+      });
+
+      // Deserialize Instructions and Submit Transaction
+      sendButton.addEventListener("click", async () => {
+        if (!provider || !walletPublicKey) {
+          output.textContent = "Please connect Phantom wallet first.";
+          return;
+        }
+
+        // Example: Replace with your backend's serialized instructions
+        const serializedInstructions = [{"keys":[],"programId":"Ed25519SigVerify111111111111111111111111111","data":"AQAwAP//EAD//3AATAD//yuT2a8NYTVXt4wwp5xo8DITrkccsfBtLOs64czowPVHmTv1qaMfCfwQcTA2stORzPpi9cur9eZUAdRi5ptbu5YIHHd88Qw8BTWqnCBV+HN9XTxyvldg3nDHhlMYjpRECAAABNUNoNUsQh5KgtIlx/gmldZz+6RunOzdc9qe338GLQbzq2btIAXTU1FpC7xSJ2sreziL27uxF8HFJcFfcadGG1+SAAAAAAAAAAI="},{"keys":[{"pubkey":"DSG7P2XaMiMnoRXDzdvYmgVBdZtWYGsBLz1UrKeEZuXy","isSigner":true,"isWritable":true},{"pubkey":"7vnJPY2y5oapQJjr8iPxEGjKm8hMHupdhP6np1o5gzqP","isSigner":false,"isWritable":true},{"pubkey":"DSG7P2XaMiMnoRXDzdvYmgVBdZtWYGsBLz1UrKeEZuXy","isSigner":false,"isWritable":false},{"pubkey":"3SkwKGY38usPVPyngd57a8u2T6pK2KPQiGMCpT5nBHWr","isSigner":false,"isWritable":false},{"pubkey":"11111111111111111111111111111111","isSigner":false,"isWritable":false},{"pubkey":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","isSigner":false,"isWritable":false}],"programId":"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL","data":"AQ=="},{"keys":[{"pubkey":"66W2xL9W892CSZ1141My2jZN31oEU4dd6eQfzidWCPw","isSigner":false,"isWritable":true},{"pubkey":"vCYQ3MTYfw7ayy912Uv2CsC7shaR4mUrhsUxGEM2xAW","isSigner":false,"isWritable":true},{"pubkey":"7vnJPY2y5oapQJjr8iPxEGjKm8hMHupdhP6np1o5gzqP","isSigner":false,"isWritable":true},{"pubkey":"9U151pnnZbMnDx7qEjJN5W8UgaHopspe6dWPycsdcpE1","isSigner":false,"isWritable":false},{"pubkey":"DSG7P2XaMiMnoRXDzdvYmgVBdZtWYGsBLz1UrKeEZuXy","isSigner":true,"isWritable":false},{"pubkey":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","isSigner":false,"isWritable":false},{"pubkey":"Sysvar1nstructions1111111111111111111111111","isSigner":false,"isWritable":false}],"programId":"DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4","data":"PsbWwdWfbNIAAAAA1QQAAAIAAAAAAAAAmTv1qaMfCfwQcTA2stORzPpi9cur9eZUAdRi5ptbu5YIHHd88Qw8BTWqnCBV+HN9XTxyvldg3nDHhlMYjpRECA=="},{"keys":[],"programId":"Ed25519SigVerify111111111111111111111111111","data":"AQAwAP//EAD//3AATAD//yuT2a8NYTVXt4wwp5xo8DITrkccsfBtLOs64czowPVH2JpT6VQXDNI/xbk2tnaGqfzaOqmPqskabeigotvVzQvBbmzrgmLYM5GLUCPXFt0mmk8cg9guMhI+zs93cgSqDAAABNYNoNUsQh5KgtIlx/gmldZz+6RunOzdc9qe338GLQbzq2btIAXTU1FpC7xSJ2sreziL27uxF8HFJcFfcadGG1+SAAAAAAAAAAI="},{"keys":[{"pubkey":"DSG7P2XaMiMnoRXDzdvYmgVBdZtWYGsBLz1UrKeEZuXy","isSigner":true,"isWritable":true},{"pubkey":"7vnJPY2y5oapQJjr8iPxEGjKm8hMHupdhP6np1o5gzqP","isSigner":false,"isWritable":true},{"pubkey":"DSG7P2XaMiMnoRXDzdvYmgVBdZtWYGsBLz1UrKeEZuXy","isSigner":false,"isWritable":false},{"pubkey":"3SkwKGY38usPVPyngd57a8u2T6pK2KPQiGMCpT5nBHWr","isSigner":false,"isWritable":false},{"pubkey":"11111111111111111111111111111111","isSigner":false,"isWritable":false},{"pubkey":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","isSigner":false,"isWritable":false}],"programId":"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL","data":"AQ=="},{"keys":[{"pubkey":"66W2xL9W892CSZ1141My2jZN31oEU4dd6eQfzidWCPw","isSigner":false,"isWritable":true},{"pubkey":"vCYQ3MTYfw7ayy912Uv2CsC7shaR4mUrhsUxGEM2xAW","isSigner":false,"isWritable":true},{"pubkey":"7vnJPY2y5oapQJjr8iPxEGjKm8hMHupdhP6np1o5gzqP","isSigner":false,"isWritable":true},{"pubkey":"9U151pnnZbMnDx7qEjJN5W8UgaHopspe6dWPycsdcpE1","isSigner":false,"isWritable":false},{"pubkey":"DSG7P2XaMiMnoRXDzdvYmgVBdZtWYGsBLz1UrKeEZuXy","isSigner":true,"isWritable":false},{"pubkey":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","isSigner":false,"isWritable":false},{"pubkey":"Sysvar1nstructions1111111111111111111111111","isSigner":false,"isWritable":false}],"programId":"DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4","data":"PsbWwdWfbNIDAAAA1gQAAAIAAAAAAAAA2JpT6VQXDNI/xbk2tnaGqfzaOqmPqskabeigotvVzQvBbmzrgmLYM5GLUCPXFt0mmk8cg9guMhI+zs93cgSqDA=="},{"keys":[],"programId":"Ed25519SigVerify111111111111111111111111111","data":"AQAwAP//EAD//3AATAD//yuT2a8NYTVXt4wwp5xo8DITrkccsfBtLOs64czowPVHP0iVKKJd0pm28ebmUc2Fxex/84lXwjl7/ooAz5aIIOl/kswoDe80yAGQ3F/dzESF13BOSeze24pWXlUknvaeCgAABNcNoNUsQh5KgtIlx/gmldZz+6RunOzdc9qe338GLQbzq2btIAXTU1FpC7xSJ2sreziL27uxF8HFJcFfcadGG1+SAAAAAAAAAAI="},{"keys":[{"pubkey":"DSG7P2XaMiMnoRXDzdvYmgVBdZtWYGsBLz1UrKeEZuXy","isSigner":true,"isWritable":true},{"pubkey":"7vnJPY2y5oapQJjr8iPxEGjKm8hMHupdhP6np1o5gzqP","isSigner":false,"isWritable":true},{"pubkey":"DSG7P2XaMiMnoRXDzdvYmgVBdZtWYGsBLz1UrKeEZuXy","isSigner":false,"isWritable":false},{"pubkey":"3SkwKGY38usPVPyngd57a8u2T6pK2KPQiGMCpT5nBHWr","isSigner":false,"isWritable":false},{"pubkey":"11111111111111111111111111111111","isSigner":false,"isWritable":false},{"pubkey":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","isSigner":false,"isWritable":false}],"programId":"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL","data":"AQ=="},{"keys":[{"pubkey":"66W2xL9W892CSZ1141My2jZN31oEU4dd6eQfzidWCPw","isSigner":false,"isWritable":true},{"pubkey":"vCYQ3MTYfw7ayy912Uv2CsC7shaR4mUrhsUxGEM2xAW","isSigner":false,"isWritable":true},{"pubkey":"7vnJPY2y5oapQJjr8iPxEGjKm8hMHupdhP6np1o5gzqP","isSigner":false,"isWritable":true},{"pubkey":"9U151pnnZbMnDx7qEjJN5W8UgaHopspe6dWPycsdcpE1","isSigner":false,"isWritable":false},{"pubkey":"DSG7P2XaMiMnoRXDzdvYmgVBdZtWYGsBLz1UrKeEZuXy","isSigner":true,"isWritable":false},{"pubkey":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","isSigner":false,"isWritable":false},{"pubkey":"Sysvar1nstructions1111111111111111111111111","isSigner":false,"isWritable":false}],"programId":"DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4","data":"PsbWwdWfbNIGAAAA1wQAAAIAAAAAAAAAP0iVKKJd0pm28ebmUc2Fxex/84lXwjl7/ooAz5aIIOl/kswoDe80yAGQ3F/dzESF13BOSeze24pWXlUknvaeCg=="}];
+        try {
+          const connection = new solanaWeb3.Connection("https://api.devnet.solana.com", "confirmed");
+
+          // Deserialize instructions
+          const instructions = serializedInstructions.map((instruction) => {
+            return new solanaWeb3.TransactionInstruction({
+              keys: instruction.keys.map((key) => ({
+                pubkey: new solanaWeb3.PublicKey(key.pubkey),
+                isSigner: key.isSigner,
+                isWritable: key.isWritable,
+              })),
+              programId: new solanaWeb3.PublicKey(instruction.programId),
+              data: decodeBase64ToUint8Array(instruction.data)
+            });
+          });
+
+          // Create a transaction and add instructions
+          const transaction = new solanaWeb3.Transaction();
+          transaction.add(...instructions);
+
+          // Set recent blockhash and fee payer
+          transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+          transaction.feePayer = walletPublicKey;
+
+          // Sign the transaction with Phantom
+          const signedTransaction = await provider.signTransaction(transaction);
+
+          // Send and confirm the transaction
+          const txId = await connection.sendRawTransaction(signedTransaction.serialize());
+          await connection.confirmTransaction(txId);
+
+          output.textContent = `Transaction submitted and confirmed! Transaction ID: ${txId}`;
+        } catch (error) {
+          output.textContent = `Error: ${error.message}`;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
