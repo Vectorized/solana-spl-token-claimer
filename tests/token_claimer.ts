@@ -1,7 +1,16 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { TokenClaimer } from "../target/types/token_claimer";
-import { PublicKey, SystemProgram, Keypair } from "@solana/web3.js";
+import { 
+  PublicKey, 
+  SystemProgram, 
+  Keypair,
+  TransactionMessage,
+  VersionedMessage,
+  VersionedTransaction,
+  AddressLookupTableProgram,
+  Transaction
+} from "@solana/web3.js";
 import { 
   Token, 
   TOKEN_PROGRAM_ID, 
@@ -15,6 +24,7 @@ import {
 } from "@solana/spl-token";
 import { assert, expect } from "chai";
 import * as nacl from "tweetnacl";
+import { keccak_256 } from '@noble/hashes/sha3';
 
 describe("token_claimer", () => {
   // Configure the client to use the local cluster.
@@ -102,28 +112,20 @@ describe("token_claimer", () => {
       await provider.connection.requestAirdrop(stateAccount.publicKey, 111 * anchor.web3.LAMPORTS_PER_SOL)
     );
 
-    await program.methods
-      .expandBitmap()
-      .accounts({
-        state: stateAccount.publicKey,
-        owner: owner.publicKey,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([owner])
-      .rpc();
-    
-    await program.methods
-      .expandBitmap()
-      .accounts({
-        state: stateAccount.publicKey,
-        owner: owner.publicKey,
-        systemProgram: SystemProgram.programId,
-      })
-      .signers([owner])
-      .rpc();
+    for (let i = 0; i < 8; i++) {
+      await program.methods
+        .expandBitmap()
+        .accounts({
+          state: stateAccount.publicKey,
+          owner: owner.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([owner])
+        .rpc();
+    }
       
     state = await program.account.state.fetch(stateAccount.publicKey);
-    expect(state.claimedBitmap.length).to.eq(20000);
+    expect(state.claimedBitmap.length).to.eq(80000);
 
     expect(state.claimSigner).to.deep.equal(claimSigner.publicKey);
   });
@@ -175,6 +177,59 @@ describe("token_claimer", () => {
       .rpc();
   });
 
+  const sleep = (ms) => {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+  };
+
+  const sendInstructions = async (senderAndPayer, instructions, lookupTableAccount, verbose) => {
+    let latestBlockhash = await provider.connection.getLatestBlockhash(
+      "confirmed"
+    );
+    const transactionMessageParams = {
+      payerKey: senderAndPayer.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: instructions,
+    };
+    const messageV0 = lookupTableAccount ? 
+      new TransactionMessage(transactionMessageParams).compileToV0Message([lookupTableAccount]) :
+      new TransactionMessage(transactionMessageParams).compileToV0Message();
+    if (verbose) console.log("Message V0:", messageV0);
+    const serializedMessage = Buffer.from(messageV0.serialize()).toString(
+      "base64"
+    );
+    if (verbose) console.log("Serialized Message:", serializedMessage);
+    const deserializedMessage = VersionedMessage.deserialize(
+      Buffer.from(serializedMessage, "base64")
+    );
+    const newTransaction = new VersionedTransaction(deserializedMessage);
+    newTransaction.sign([senderAndPayer]);
+    try {
+      const signature1 = await provider.connection.sendRawTransaction(
+        newTransaction.serialize(),
+        {
+          skipPreflight: false,
+          maxRetries: 3,
+          preflightCommitment: "confirmed",
+        }
+      );
+      latestBlockhash = await provider.connection.getLatestBlockhash(
+        "confirmed"
+      );
+      const txId = await provider.connection.confirmTransaction({
+        blockhash: latestBlockhash.blockhash,
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        signature: signature1
+      });
+      if (verbose) console.log("Transaction ID:", txId);
+    } catch (err) {
+      console.error(err);
+      if (err.transactionLogs) {
+        console.error("Transaction logs:", err.transactionLogs);
+      }
+      throw err;
+    }
+  };
+
   it("Can claim tokens", async () => {
     // Create a token mint
     mint = await createMint(provider.connection, owner, owner.publicKey, null, 9);
@@ -202,39 +257,30 @@ describe("token_claimer", () => {
       program.programId
     );
 
-    const claimIndex = new anchor.BN(1);
-    // Generate a mock signature for the claim
-    const message = Buffer.concat([
-      claimIndex.toArrayLike(Buffer, "be", 4),
-      sourceTokenAccount.toBuffer(),
-      expectedDestinationTokenAccount.toBuffer(), 
-      amount.toArrayLike(Buffer, "be", 8),
-    ]);
-    console.log("Message:", message.length, message.toString("hex"));
-    // Generate Ed25519 signature
-    const signature = nacl.sign.detached(message, claimSigner.secretKey);
-
-    // Output
-    console.log("Message:", message.toString("hex"));
-    console.log("Public Key:", claimSigner.publicKey.toBase58());
-    console.log("Signature:", Buffer.from(signature).toString("hex"));
-    
-    // Fetch the source token account details
-    const sourceAccountInfo = await getAccount(provider.connection, sourceTokenAccount);
-
-    // Fetch the destination token account details
-    // const destinationAccountInfo = await getAccount(provider.connection, destinationTokenAccount);
-
-    
-    // Print the owner of each token account
-    console.log("Source Token Account Owner:", sourceAccountInfo.owner.toString());
-    // console.log("Destination Token Account Owner:", destinationAccountInfo.owner.toString());
-    console.log("S:", owner.publicKey.toString());
-    console.log("D:", destination.publicKey.toString());
-
-    console.log("Source Token Account Balance (before mint):", 
-      await getSplTokenBalance(provider.connection, owner.publicKey, mint)
-    );
+    const slot = await provider.connection.getSlot();
+    const [lookupTableInst, lookupTableAddress] =
+      AddressLookupTableProgram.createLookupTable({
+        authority: owner.publicKey,
+        payer: owner.publicKey,
+        recentSlot: slot - 1,
+      });
+    const extendInstruction = AddressLookupTableProgram.extendLookupTable({
+      payer: owner.publicKey,
+      authority: owner.publicKey,
+      lookupTable: lookupTableAddress,
+      addresses: [
+        stateAccount.publicKey,
+        sourceTokenAccount,
+        anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        anchor.web3.Ed25519Program.programId,
+        anchor.web3.SystemProgram.programId,
+        TOKEN_PROGRAM_ID,
+        claimSigner.publicKey,
+        mint,
+        program.programId,
+      ],
+    });
+    // await sendInstructions(owner, [lookupTableInst, extendInstruction], null, true);
     
     // Mint tokens to the source account
     await mintTo(
@@ -262,43 +308,76 @@ describe("token_claimer", () => {
       .signers([owner])
       .rpc();
     
-    try {
-      // await createAssociatedTokenAccount(
-      //   provider.connection,
-      //   owner,
-      //   mint,
-      //   destination.publicKey
-      // );
-      const ed25519InstructionIndex = new anchor.BN(0);
+    const claims = [
+      { claimIndex: 30110, amount: 1 },
+      { claimIndex: 30111, amount: 1 },
+      { claimIndex: 30112, amount: 1 },
+      { claimIndex: 30113, amount: 1 },
+      { claimIndex: 30114, amount: 1 },
+      { claimIndex: 30115, amount: 1 },
+      { claimIndex: 30116, amount: 1 },
+      { claimIndex: 30117, amount: 1 },
+      { claimIndex: 30118, amount: 1 },
+      { claimIndex: 30119, amount: 1 },
+      { claimIndex: 30120, amount: 1 },
+      { claimIndex: 30121, amount: 1 },
+      { claimIndex: 30122, amount: 1 },
+      { claimIndex: 30123, amount: 1 },
+      { claimIndex: 30124, amount: 1 },
+      { claimIndex: 30125, amount: 1 },
+      { claimIndex: 30126, amount: 1 },
+      { claimIndex: 30127, amount: 1 },
+      { claimIndex: 30128, amount: 1 },
+      { claimIndex: 30129, amount: 1 },
+    ];
+    
+    let instructions = []; 
+    let claimIndices = [];
+    let totalAmount = 0;
+    for (let i = 0; i < claims.length; i++) {
+      const { claimIndex, amount } = claims[i];
+      totalAmount += amount;
+      claimIndices.push(claimIndex);
+    }
+    const message = keccak_256(Buffer.concat([
+      keccak_256(Buffer.concat(
+        claimIndices.map(i => (new anchor.BN(i)).toArrayLike(Buffer, "le", 4))
+      )),
+      claimer.publicKey.toBuffer(),
+      sourceTokenAccount.toBuffer(),
+      expectedDestinationTokenAccount.toBuffer(), 
+      (new anchor.BN(totalAmount)).toArrayLike(Buffer, "le", 8),
+    ]));
+    const signature = nacl.sign.detached(message, claimSigner.secretKey);
+    instructions.push(
+      createAssociatedTokenAccountIdempotentInstruction(
+        claimer.publicKey,
+        expectedDestinationTokenAccount,
+        destination.publicKey, 
+        mint 
+      ),
+      anchor.web3.Ed25519Program.createInstructionWithPublicKey({
+        publicKey: claimSigner.publicKey.toBytes(),
+        message: message,
+        signature: signature,
+      }),
       await program.methods
-        .claim(ed25519InstructionIndex, claimIndex, amount, signature)
+        .claim(claimIndices, new anchor.BN(totalAmount))
         .accounts({
           state: stateAccount.publicKey,
           claimer: claimer.publicKey,
           sourceTokenAccount: sourceTokenAccount,
           destinationTokenAccount: expectedDestinationTokenAccount,
           ixSysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-        })
-        .preInstructions([
-          anchor.web3.Ed25519Program.createInstructionWithPublicKey({
-            publicKey: claimSigner.publicKey.toBytes(),
-            message: message,
-            signature: signature,
-          }),
-          createAssociatedTokenAccountIdempotentInstruction(
-            claimer.publicKey,
-            expectedDestinationTokenAccount,
-            destination.publicKey, 
-            mint 
-          ),
-          
-        ])
-        .signers([claimer])
-        .rpc();
-    } catch (err) {
-      console.error(err);
-      throw err;
-    }
+        }).instruction()
+    );
+
+    // await sleep(1000);
+    // const lookupTableAccount = (
+    //   await provider.connection.getAddressLookupTable(lookupTableAddress)
+    // ).value;
+    await sendInstructions(claimer, instructions, null, true);
+    // await sendInstructions(claimer, instructions, null, true);
     
     console.log("Destination Token Account Balance (after transfer):", 
       await getSplTokenBalance(provider.connection, destination.publicKey, mint)

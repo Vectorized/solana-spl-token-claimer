@@ -16,6 +16,7 @@ import * as splToken from "@solana/spl-token";
 import * as fs from "fs";
 import * as nacl from "tweetnacl";
 import { bs58 } from "@coral-xyz/anchor/dist/cjs/utils/bytes";
+import { keccak_256 } from '@noble/hashes/sha3';
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -51,10 +52,8 @@ const loadPublicKey = (path) => {
   const claimSigner = loadKeypair("keypairs/claim_signer.json");
   const splTokenMint = loadPublicKey("keypairs/spl_token.json");
   const sourceTokenAccount = loadPublicKey("keypairs/spl_token_for_deployer.json");
-  const claimer = Keypair.fromSecretKey(
-    bs58.decode("3mPCSBwGhPJCTwsui1JfXWfLo9gVqg2DmVEpMwxqJN1uaL9dDQ1X2esoWwSV62KephpkhKoxv3eVYXagyk1Jo2Eo")
-  );
-  const destination = claimer;// loadKeypair("keypairs/destination.json");
+  const claimer = Keypair.fromSecretKey("keypairs/claimer.json");
+  const destination = claimer; // loadKeypair("keypairs/destination.json");
 
   let state = await program.account.state.fetch(stateAccount.publicKey);
  
@@ -82,53 +81,50 @@ const loadPublicKey = (path) => {
 
   // Make sure you bump the claim index, cuz I might have already claimed some.
   const claims = [
-    {
-      claimIndex: 1267,
-      amount: 2,
-    },
-    {
-      claimIndex: 1268,
-      amount: 2,
-    },
-    {
-      claimIndex: 1269,
-      amount: 2,
-    },
+    { claimIndex: 1300, amount: 2 },
+    { claimIndex: 1301, amount: 2 }
   ];
   
   let instructions = []; 
+  let claimIndices = [];
+  let totalAmount = 0;
   for (let i = 0; i < claims.length; i++) {
     const { claimIndex, amount } = claims[i];
-    const message = Buffer.concat([
-      (new anchor.BN(claimIndex)).toArrayLike(Buffer, "be", 4),
-      sourceTokenAccount.toBuffer(),
-      expectedDestinationTokenAccount.toBuffer(), 
-      (new anchor.BN(amount)).toArrayLike(Buffer, "be", 8),
-    ]);
-    const signature = nacl.sign.detached(message, claimSigner.secretKey);
-    instructions.push(
-      anchor.web3.Ed25519Program.createInstructionWithPublicKey({
-        publicKey: claimSigner.publicKey.toBytes(),
-        message: message,
-        signature: signature,
-      }),
-      splToken.createAssociatedTokenAccountIdempotentInstruction(
-        claimer.publicKey,
-        expectedDestinationTokenAccount,
-        destination.publicKey, 
-        splTokenMint 
-      ),
-      await program.methods
-        .claim(i * 3, claimIndex, new anchor.BN(amount), Array.from(signature))
-        .accounts({
-          state: stateAccount.publicKey,
-          claimer: claimer.publicKey,
-          sourceTokenAccount: sourceTokenAccount,
-          destinationTokenAccount: expectedDestinationTokenAccount,
-          ixSysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
-        }).instruction()
-    );
+    totalAmount += amount;
+    claimIndices.push(claimIndex);
   }
+  const message = keccak_256(Buffer.concat([
+    keccak_256(Buffer.concat(
+      claimIndices.map(i => (new anchor.BN(i)).toArrayLike(Buffer, "le", 4))
+    )),
+    claimer.publicKey.toBuffer(),
+    sourceTokenAccount.toBuffer(),
+    expectedDestinationTokenAccount.toBuffer(), 
+    (new anchor.BN(totalAmount)).toArrayLike(Buffer, "le", 8),
+  ]));
+  const signature = nacl.sign.detached(message, claimSigner.secretKey);
+  instructions.push(
+    splToken.createAssociatedTokenAccountIdempotentInstruction(
+      claimer.publicKey,
+      expectedDestinationTokenAccount,
+      destination.publicKey, 
+      splTokenMint 
+    ),
+    anchor.web3.Ed25519Program.createInstructionWithPublicKey({
+      publicKey: claimSigner.publicKey.toBytes(),
+      message: message,
+      signature: signature,
+    }),
+    await program.methods
+      .claim(claimIndices, new anchor.BN(totalAmount))
+      .accounts({
+        state: stateAccount.publicKey,
+        claimer: claimer.publicKey,
+        sourceTokenAccount: sourceTokenAccount,
+        destinationTokenAccount: expectedDestinationTokenAccount,
+        ixSysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+      }).instruction()
+  );
 
   const serializedInstructions = instructions.map((instruction) => {
     return {
@@ -142,49 +138,4 @@ const loadPublicKey = (path) => {
     };
   });
   console.log("Serialized Instructions:", JSON.stringify(serializedInstructions));
-
-  // console.log("Program Owner:", state.owner.toBase58());
-  // console.log("Program Claim Signer:", state.claimSigner.toBase58());
-  
-  // const latestBlockhash = await provider.connection.getLatestBlockhash(
-  //   "confirmed"
-  // );
-
-  // await sleep(5000); // Sleep for 5 seconds
-
-  // // Create message
-  // const messageV0 = new TransactionMessage({
-  //   payerKey: claimer.publicKey,
-  //   recentBlockhash: latestBlockhash.blockhash,
-  //   instructions: instructions,
-  // }).compileToV0Message();
-  // console.log("Message V0:", messageV0);
-  // const serializedMessage = Buffer.from(messageV0.serialize()).toString(
-  //   "base64"
-  // );
-  // console.log("Serialized Message:", serializedMessage);
-  // const deserializedMessage = VersionedMessage.deserialize(
-  //   Buffer.from(serializedMessage, "base64")
-  // );
-  // const newTransaction = new VersionedTransaction(deserializedMessage);
-  // newTransaction.sign([claimer]);
-
-  // try {
-  //   const signature1 = await provider.connection.sendRawTransaction(
-  //     newTransaction.serialize(),
-  //     {
-  //       skipPreflight: false,
-  //       maxRetries: 3,
-  //       preflightCommitment: "confirmed",
-  //     }
-  //   );
-  //   const txId = await provider.connection.confirmTransaction(signature1, "confirmed");
-  //   console.log("Transaction ID:", txId);
-  // } catch (err) {
-  //   console.error(err);
-  //   if (err.transactionLogs) {
-  //     console.error("Transaction logs:", err.transactionLogs);
-  //   }
-  //   throw err;
-  // }
 })();
