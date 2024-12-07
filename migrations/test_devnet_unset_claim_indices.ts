@@ -45,19 +45,16 @@ const loadPublicKey = (path) => {
   console.log("Deployer:", deployer.publicKey.toBase58());
 
   const claimIndicesToUnset = [111, 110];
-  let instructions = []; 
   
-  for (let i = 0; i < claimIndicesToUnset.length; i++) {
+  try {
+    let instructions = []; 
     instructions.push(
       await program.methods
-        .unsetClaimIndex(claimIndicesToUnset[i])
+        .unsetClaimIndices(claimIndicesToUnset)
         .accounts({
           state: stateAccount.publicKey
         }).instruction()
     );
-  }
-
-  try {
     const transaction = new Transaction();
     instructions.forEach((instruction) => transaction.add(instruction));
     const txId = await sendAndConfirmTransaction(connection, transaction, [deployer]);
