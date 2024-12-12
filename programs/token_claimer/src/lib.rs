@@ -1,12 +1,18 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::keccak;
+use anchor_lang::solana_program::sysvar::clock::Clock;
 use anchor_lang::solana_program::sysvar::instructions::{load_instruction_at_checked, ID as IX_ID};
 use anchor_spl::token::{self, Approve, Revoke, Token, TokenAccount, Transfer};
-use anchor_lang::solana_program::sysvar::clock::Clock;
 
 pub mod utils;
 
 declare_id!("DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4");
+
+// Remember to update this if you use a different state account.
+const STATE_ACCOUNT: anchor_lang::prelude::Pubkey =
+    pubkey!("66W2xL9W892CSZ1141My2jZN31oEU4dd6eQfzidWCPw");
+// March 9 2025 11:59 pm, update on deployment.
+const END_TIME: u32 = 1741564799;
 
 const DISCIMINATOR_LEN: usize = 8;
 const OWNER_OFFSET: usize = DISCIMINATOR_LEN; // Skip discriminator (8 bytes).
@@ -18,6 +24,15 @@ const INITIAL_STATE_BYTE_LEN: usize = BITMAP_BYTES_OFFSET + 128;
 macro_rules! state_slice {
     ($ctx:expr, $start:expr, $n:expr) => {
         $ctx.accounts.state.data.borrow_mut()[$start..$start + $n]
+    };
+}
+
+macro_rules! check_state {
+    ($ctx:expr) => {
+        require!(
+            STATE_ACCOUNT == $ctx.accounts.state.key(),
+            CustomError::Unauthorized
+        );
     };
 }
 
@@ -68,6 +83,7 @@ pub mod token_claimer {
 
     /// Initialize the program state.
     pub fn initialize(ctx: Context<Initialize>, claim_signer: Pubkey) -> Result<()> {
+        check_state!(ctx);
         let state = &mut ctx.accounts.state;
         state.owner = ctx.accounts.owner.key();
         state.claim_signer = claim_signer;
@@ -77,6 +93,7 @@ pub mod token_claimer {
 
     /// Expands the bitmap by 10_000 bytes (80_000 bits).
     pub fn expand_bitmap(ctx: Context<ExpandBitmap>) -> Result<()> {
+        check_state!(ctx);
         only_owner!(ctx);
 
         let current_bitmap_len: u32 = state_bitmap_len!(ctx);
@@ -95,6 +112,7 @@ pub mod token_claimer {
 
     /// Update the claim signer (only callable by the program owner).
     pub fn set_claim_signer(ctx: Context<SetClaimSigner>, new_claim_signer: Pubkey) -> Result<()> {
+        check_state!(ctx);
         only_owner!(ctx);
 
         let previous_claim_signer = state_pubkey!(ctx, CLAIM_SIGNER_OFFSET);
@@ -110,6 +128,7 @@ pub mod token_claimer {
 
     /// Transfer ownership of the program.
     pub fn transfer_ownership(ctx: Context<TransferOwnership>, new_owner: Pubkey) -> Result<()> {
+        check_state!(ctx);
         only_owner!(ctx);
 
         let previous_owner = state_pubkey!(ctx, OWNER_OFFSET);
@@ -124,9 +143,17 @@ pub mod token_claimer {
     }
 
     /// Process a claim for tokens with a valid signature.
-    pub fn claim(ctx: Context<Claim>, claim_indices: Vec<u32>, total_amount: u64, expiry: u32) -> Result<()> {
-        let clock = Clock::get()?;
-        require!(clock.unix_timestamp < expiry.into(), CustomError::ClaimExpired);
+    pub fn claim(
+        ctx: Context<Claim>,
+        claim_indices: Vec<u32>,
+        total_amount: u64,
+        expiry: u32,
+    ) -> Result<()> {
+        check_state!(ctx);
+        require!(
+            Clock::get()?.unix_timestamp < expiry.into() && expiry <= END_TIME,
+            CustomError::ClaimExpired
+        );
         let solana_account_info = ctx.accounts.ix_sysvar.to_account_info();
         let message = keccak::hashv(&[
             keccak::hash(
@@ -185,7 +212,12 @@ pub mod token_claimer {
         );
         // Transfer the tokens.
         let binding = ctx.accounts.source_token_account.key();
-        let seeds = &[b"delegate", binding.as_ref(), &[ctx.bumps.delegate]];
+        let seeds = &[
+            b"delegate",
+            binding.as_ref(),
+            STATE_ACCOUNT.as_ref(),
+            &[ctx.bumps.delegate],
+        ];
         let signer = &[&seeds[..]];
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
@@ -212,6 +244,7 @@ pub mod token_claimer {
         ctx: Context<UnsetClaimIndex>,
         claim_indices: Vec<u32>,
     ) -> Result<()> {
+        check_state!(ctx);
         only_owner!(ctx);
 
         for claim_index in claim_indices.iter() {
@@ -279,7 +312,7 @@ pub struct ApproveDelegate<'info> {
     pub token_account: Account<'info, TokenAccount>, // Source SPL token account
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", token_account.key().as_ref()],
+        seeds = [b"delegate", token_account.key().as_ref(), STATE_ACCOUNT.as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
@@ -293,7 +326,7 @@ pub struct RevokeDelegate<'info> {
     pub token_account: Account<'info, TokenAccount>, // Source SPL token account
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", token_account.key().as_ref()],
+        seeds = [b"delegate", token_account.key().as_ref(), STATE_ACCOUNT.as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
@@ -337,7 +370,7 @@ pub struct Claim<'info> {
     pub destination_token_account: AccountInfo<'info>,
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", source_token_account.key().as_ref()],
+        seeds = [b"delegate", source_token_account.key().as_ref(), STATE_ACCOUNT.as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
