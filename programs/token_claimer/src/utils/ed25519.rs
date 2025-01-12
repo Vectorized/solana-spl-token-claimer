@@ -2,20 +2,15 @@ use anchor_lang::solana_program::ed25519_program::ID as ED25519_ID;
 use anchor_lang::solana_program::instruction::Instruction;
 
 /// Verify Ed25519Program instruction fields
-pub fn verify_ed25519_ix(ix: &Instruction, pubkey: &[u8], msg: &[u8], sig: &[u8]) -> bool {
-    if ix.program_id       != ED25519_ID                   ||  // The program id we expect
-        ix.accounts.len()   != 0                            ||  // With no context accounts
-        ix.data.len()       != (16 + 64 + 32 + msg.len())
-    // And data of this size
-    {
-        return false;
-    }
-
-    return check_ed25519_data(&ix.data, pubkey, msg, sig);
+pub fn verify_ed25519_ix(ix: &Instruction, pubkey: &[u8], msg: &[u8]) -> bool {
+    return ix.program_id == ED25519_ID && // The program id we expect.
+        ix.accounts.len() == 0 && // With no context accounts.
+        ix.data.len() == (16 + 64 + 32 + msg.len()) && // With the correct data size.
+        check_ed25519_data(&ix.data, pubkey, msg);
 }
 
 /// Verify serialized Ed25519Program instruction data
-pub fn check_ed25519_data(data: &[u8], pubkey: &[u8], msg: &[u8], sig: &[u8]) -> bool {
+pub fn check_ed25519_data(data: &[u8], pubkey: &[u8], msg: &[u8]) -> bool {
     // According to this layout used by the Ed25519Program
     // https://github.com/solana-labs/solana-web3.js/blob/master/src/ed25519-program.ts#L33
 
@@ -32,14 +27,13 @@ pub fn check_ed25519_data(data: &[u8], pubkey: &[u8], msg: &[u8], sig: &[u8]) ->
     let message_instruction_index = &data[14..=15]; // Bytes 14,15
 
     let data_pubkey = &data[16..16 + 32]; // Bytes 16..16+32
-    let data_sig = &data[48..48 + 64]; // Bytes 48..48+64
     let data_msg = &data[112..]; // Bytes 112..end
 
     // Expected values
 
     let exp_public_key_offset: u16 = 16; // 2*u8 + 7*u16
     let exp_signature_offset: u16 = exp_public_key_offset + pubkey.len() as u16;
-    let exp_message_data_offset: u16 = exp_signature_offset + sig.len() as u16;
+    let exp_message_data_offset: u16 = exp_signature_offset + 64;
     let exp_num_signatures: u8 = 1;
     let exp_message_data_size: u16 = msg.len().try_into().unwrap();
 
@@ -58,10 +52,5 @@ pub fn check_ed25519_data(data: &[u8], pubkey: &[u8], msg: &[u8], sig: &[u8]) ->
     {
         return false;
     }
-    // Arguments
-    if data_pubkey != pubkey || data_msg != msg || data_sig != sig {
-        return false;
-    }
-
-    return true;
+    return data_pubkey == pubkey && data_msg == msg;
 }

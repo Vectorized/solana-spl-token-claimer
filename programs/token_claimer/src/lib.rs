@@ -1,10 +1,15 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::keccak;
+use anchor_lang::solana_program::sysvar::clock::Clock;
 use anchor_lang::solana_program::sysvar::instructions::{load_instruction_at_checked, ID as IX_ID};
 use anchor_spl::token::{self, Approve, Revoke, Token, TokenAccount, Transfer};
 
 pub mod utils;
 
 declare_id!("DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4");
+
+// March 9 2025 11:59 pm, update on deployment.
+const END_TIME: u32 = 1741564799;
 
 const DISCIMINATOR_LEN: usize = 8;
 const OWNER_OFFSET: usize = DISCIMINATOR_LEN; // Skip discriminator (8 bytes).
@@ -48,6 +53,7 @@ macro_rules! state_bitmap_len {
 
 macro_rules! state_claim_bitmap_byte {
     ($ctx:expr, $i:expr) => {
+        // The program will panic if the state account doesn't have enough space.
         $ctx.accounts.state.data.borrow_mut()[BITMAP_BYTES_OFFSET + $i as usize]
     };
 }
@@ -123,56 +129,63 @@ pub mod token_claimer {
     /// Process a claim for tokens with a valid signature.
     pub fn claim(
         ctx: Context<Claim>,
-        ed25519_instruction_index: u32,
-        claim_index: u32,
-        amount: u64,
-        signature: [u8; 64],
+        claim_indices: Vec<u32>,
+        total_amount: u64,
+        expiry: u32,
     ) -> Result<()> {
+        require!(
+            Clock::get()?.unix_timestamp < expiry.into() && expiry <= END_TIME,
+            CustomError::ClaimExpired
+        );
         let solana_account_info = ctx.accounts.ix_sysvar.to_account_info();
-        let message = [
-            claim_index.to_be_bytes().as_slice(),
+        let message = keccak::hashv(&[
+            keccak::hash(
+                &claim_indices
+                    .iter()
+                    .flat_map(|index| index.to_le_bytes())
+                    .collect::<Vec<u8>>(),
+            )
+            .as_ref(),
+            ctx.accounts.claimer.key().as_ref(),
             ctx.accounts.source_token_account.key().as_ref(),
             ctx.accounts.destination_token_account.key().as_ref(),
-            amount.to_be_bytes().as_slice(),
-        ]
-        .concat();
-        let has_valid_signature = (0..4).any(|i| {
-            load_instruction_at_checked(
-                ed25519_instruction_index
-                    .saturating_add(i)
-                    .try_into()
-                    .unwrap(),
-                &solana_account_info,
-            )
-            .ok()
-            .map_or(false, |ix| {
-                utils::verify_ed25519_ix(
+            total_amount.to_le_bytes().as_slice(),
+            expiry.to_le_bytes().as_slice(),
+        ])
+        .0;
+        let mut has_valid_signature = false;
+        for i in 0..64 {
+            if let Ok(ix) = load_instruction_at_checked(i, &solana_account_info) {
+                // Verify the Ed25519 signature for the instruction
+                if utils::verify_ed25519_ix(
                     &ix,
                     &state_pubkey_slice!(ctx, CLAIM_SIGNER_OFFSET),
                     &message,
-                    &signature,
-                )
-            })
-        });
+                ) {
+                    has_valid_signature = true;
+                    break;
+                }
+            } else {
+                break; // Stop iterating if no more instructions are available.
+            }
+        }
         require!(has_valid_signature, CustomError::InvalidSignature);
 
-        // Check if the claim index has already been processed.
-        let byte_index = claim_index >> 3; // Division by 8 (bit shift).
-        let bit_mask = 1 << ((claim_index & 7) as u8); // Modulo 8 (bit mask).
-        require!(
-            byte_index < state_bitmap_len!(ctx),
-            CustomError::InvalidClaimIndex
-        );
-        require!(
-            state_claim_bitmap_byte!(ctx, byte_index) & bit_mask == 0,
-            CustomError::AlreadyClaimed
-        );
-        // Mark the claim as processed.
-        state_claim_bitmap_byte!(ctx, byte_index) |= bit_mask;
+        for claim_index in claim_indices.iter() {
+            // Check if the claim index has already been processed.
+            let byte_index = claim_index >> 3; // Division by 8 (bit shift).
+            let bit_mask = 1 << ((claim_index & 7) as u8); // Modulo 8 (bit mask).
+            require!(
+                state_claim_bitmap_byte!(ctx, byte_index) & bit_mask == 0,
+                CustomError::AlreadyClaimed
+            );
+            // Mark the claim as processed.
+            state_claim_bitmap_byte!(ctx, byte_index) |= bit_mask;
+        }
 
         // Ensure there are enough tokens in the source account.
         require!(
-            ctx.accounts.source_token_account.amount >= amount,
+            ctx.accounts.source_token_account.amount >= total_amount,
             CustomError::InsufficientFunds
         );
         // Ensure the token program is correct.
@@ -181,8 +194,14 @@ pub mod token_claimer {
             CustomError::InvalidTokenProgram
         );
         // Transfer the tokens.
-        let binding = ctx.accounts.source_token_account.key();
-        let seeds = &[b"delegate", binding.as_ref(), &[ctx.bumps.delegate]];
+        let source_token_account_key = ctx.accounts.source_token_account.key();
+        let state_key = ctx.accounts.state.key();
+        let seeds = &[
+            b"delegate",
+            source_token_account_key.as_ref(),
+            state_key.as_ref(),
+            &[ctx.bumps.delegate],
+        ];
         let signer = &[&seeds[..]];
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
@@ -193,28 +212,29 @@ pub mod token_claimer {
             },
             signer,
         );
-        token::transfer(cpi_ctx, amount)?;
+        token::transfer(cpi_ctx, total_amount)?;
 
         emit!(ClaimProcessed {
             claimer: ctx.accounts.claimer.key(),
-            claim_index,
-            amount,
+            claim_indices,
+            total_amount,
         });
 
         Ok(())
     }
 
     /// Unset a claim index.
-    pub fn unset_claim_index(ctx: Context<UnsetClaimIndex>, claim_index: u32) -> Result<()> {
+    pub fn unset_claim_indices(
+        ctx: Context<UnsetClaimIndex>,
+        claim_indices: Vec<u32>,
+    ) -> Result<()> {
         only_owner!(ctx);
 
-        let byte_index = claim_index >> 3; // Division by 8 (bit shift).
-        let bit_mask = 1 << ((claim_index & 7) as u8); // Modulo 8 (bit mask).
-        require!(
-            byte_index < state_bitmap_len!(ctx),
-            CustomError::InvalidClaimIndex
-        );
-        state_claim_bitmap_byte!(ctx, byte_index) &= !bit_mask;
+        for claim_index in claim_indices.iter() {
+            let byte_index = claim_index >> 3; // Division by 8 (bit shift).
+            let bit_mask = 1 << ((claim_index & 7) as u8); // Modulo 8 (bit mask).
+            state_claim_bitmap_byte!(ctx, byte_index) &= !bit_mask;
+        }
 
         Ok(())
     }
@@ -271,11 +291,14 @@ pub struct ExpandBitmap<'info> {
 
 #[derive(Accounts)]
 pub struct ApproveDelegate<'info> {
+    /// CHECK: We'll rawdog the state.
+    #[account(mut)]
+    pub state: AccountInfo<'info>,
     #[account(mut)]
     pub token_account: Account<'info, TokenAccount>, // Source SPL token account
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", token_account.key().as_ref()],
+        seeds = [b"delegate", token_account.key().as_ref(), state.key().as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
@@ -285,11 +308,14 @@ pub struct ApproveDelegate<'info> {
 
 #[derive(Accounts)]
 pub struct RevokeDelegate<'info> {
+    /// CHECK: We'll rawdog the state.
+    #[account(mut)]
+    pub state: AccountInfo<'info>,
     #[account(mut)]
     pub token_account: Account<'info, TokenAccount>, // Source SPL token account
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", token_account.key().as_ref()],
+        seeds = [b"delegate", token_account.key().as_ref(), state.key().as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
@@ -329,12 +355,11 @@ pub struct Claim<'info> {
     #[account(mut)]
     pub source_token_account: Account<'info, TokenAccount>,
     /// CHECK: The destination account for the tokens.
-    /// Might not before the start of the batched transaction.
     #[account(mut)]
     pub destination_token_account: AccountInfo<'info>,
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", source_token_account.key().as_ref()],
+        seeds = [b"delegate", source_token_account.key().as_ref(), state.key().as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
@@ -363,12 +388,12 @@ impl State {
 pub enum CustomError {
     #[msg("Unauthorized")]
     Unauthorized,
-    #[msg("Invalid claim index")]
-    InvalidClaimIndex,
     #[msg("Claim already made")]
     AlreadyClaimed,
     #[msg("Invalid signature")]
     InvalidSignature,
+    #[msg("Claim expired")]
+    ClaimExpired,
     #[msg("Invalid token program")]
     InvalidTokenProgram,
     #[msg("Insufficient funds")]
@@ -380,8 +405,8 @@ pub enum CustomError {
 #[event]
 pub struct ClaimProcessed {
     pub claimer: Pubkey,
-    pub claim_index: u32,
-    pub amount: u64,
+    pub claim_indices: Vec<u32>,
+    pub total_amount: u64,
 }
 
 #[event]
