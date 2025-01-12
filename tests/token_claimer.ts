@@ -145,7 +145,7 @@ describe("token_claimer", () => {
     expect(state.claimSigner).to.deep.equal(claimSigner.publicKey);
   });
 
-  it("Reinitializes", async () => {
+  it("Reinitializes (prepare attacker account)", async () => {
     await provider.connection.confirmTransaction(
       await provider.connection.requestAirdrop(attacker.publicKey, 111 * anchor.web3.LAMPORTS_PER_SOL)
     );
@@ -347,6 +347,7 @@ describe("token_claimer", () => {
     await program.methods
       .approveDelegate(amount)
       .accounts({
+        state: stateAccount.publicKey,
         tokenAccount: sourceTokenAccount,
         delegate: delegatePDA,
         authority: owner.publicKey,
@@ -439,7 +440,7 @@ describe("token_claimer", () => {
     );
   });
 
-  it("Attacker steals tokens", async () => {
+  it("Attacker cannot steal tokens", async () => {
     const expectedDestinationTokenAccount = await getAssociatedTokenAddress(
       mint, 
       attacker.publicKey
@@ -500,20 +501,21 @@ describe("token_claimer", () => {
           ixSysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
         }).instruction()
     );
-
-    // await sleep(1000);
-    // const lookupTableAccount = (
-    //   await provider.connection.getAddressLookupTable(lookupTableAddress)
-    // ).value;
-    await sendInstructions(attacker, instructions, null, true);
-    // await sendInstructions(claimer, instructions, null, true);
-
+    
     console.log("Source Token Account Balance (before attacker transfer):",
       await getSplTokenBalance(provider.connection, owner.publicKey, mint)
     );
-
-    console.log("Attacker Token Account Balance (after attacker transfer):", 
-      await getSplTokenBalance(provider.connection, attacker.publicKey, mint)
+    
+    let reverted = false;
+    try {
+      await sendInstructions(attacker, instructions, null, true)
+    } catch (err) {
+      reverted = true;
+    }
+    assert(reverted);
+    
+    console.log("Source Token Account Balance (after failed attacker transfer):", 
+      await getSplTokenBalance(provider.connection, owner.publicKey, mint)
     );
   });
 });

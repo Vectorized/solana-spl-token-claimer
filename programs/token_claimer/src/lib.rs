@@ -8,9 +8,6 @@ pub mod utils;
 
 declare_id!("DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4");
 
-// Remember to update this if you use a different state account.
-const STATE_ACCOUNT: anchor_lang::prelude::Pubkey =
-    pubkey!("66W2xL9W892CSZ1141My2jZN31oEU4dd6eQfzidWCPw");
 // March 9 2025 11:59 pm, update on deployment.
 const END_TIME: u32 = 1741564799;
 
@@ -24,15 +21,6 @@ const INITIAL_STATE_BYTE_LEN: usize = BITMAP_BYTES_OFFSET + 128;
 macro_rules! state_slice {
     ($ctx:expr, $start:expr, $n:expr) => {
         $ctx.accounts.state.data.borrow_mut()[$start..$start + $n]
-    };
-}
-
-macro_rules! check_state {
-    ($ctx:expr) => {
-        require!(
-            STATE_ACCOUNT == $ctx.accounts.state.key(),
-            CustomError::Unauthorized
-        );
     };
 }
 
@@ -83,7 +71,6 @@ pub mod token_claimer {
 
     /// Initialize the program state.
     pub fn initialize(ctx: Context<Initialize>, claim_signer: Pubkey) -> Result<()> {
-        check_state!(ctx);
         let state = &mut ctx.accounts.state;
         state.owner = ctx.accounts.owner.key();
         state.claim_signer = claim_signer;
@@ -93,7 +80,6 @@ pub mod token_claimer {
 
     /// Expands the bitmap by 10_000 bytes (80_000 bits).
     pub fn expand_bitmap(ctx: Context<ExpandBitmap>) -> Result<()> {
-        check_state!(ctx);
         only_owner!(ctx);
 
         let current_bitmap_len: u32 = state_bitmap_len!(ctx);
@@ -112,7 +98,6 @@ pub mod token_claimer {
 
     /// Update the claim signer (only callable by the program owner).
     pub fn set_claim_signer(ctx: Context<SetClaimSigner>, new_claim_signer: Pubkey) -> Result<()> {
-        check_state!(ctx);
         only_owner!(ctx);
 
         let previous_claim_signer = state_pubkey!(ctx, CLAIM_SIGNER_OFFSET);
@@ -128,7 +113,6 @@ pub mod token_claimer {
 
     /// Transfer ownership of the program.
     pub fn transfer_ownership(ctx: Context<TransferOwnership>, new_owner: Pubkey) -> Result<()> {
-        check_state!(ctx);
         only_owner!(ctx);
 
         let previous_owner = state_pubkey!(ctx, OWNER_OFFSET);
@@ -149,7 +133,6 @@ pub mod token_claimer {
         total_amount: u64,
         expiry: u32,
     ) -> Result<()> {
-        check_state!(ctx);
         require!(
             Clock::get()?.unix_timestamp < expiry.into() && expiry <= END_TIME,
             CustomError::ClaimExpired
@@ -211,11 +194,12 @@ pub mod token_claimer {
             CustomError::InvalidTokenProgram
         );
         // Transfer the tokens.
-        let binding = ctx.accounts.source_token_account.key();
+        let source_token_account_key = ctx.accounts.source_token_account.key();
+        let state_key = ctx.accounts.state.key();
         let seeds = &[
             b"delegate",
-            binding.as_ref(),
-            STATE_ACCOUNT.as_ref(),
+            source_token_account_key.as_ref(),
+            state_key.as_ref(),
             &[ctx.bumps.delegate],
         ];
         let signer = &[&seeds[..]];
@@ -244,7 +228,6 @@ pub mod token_claimer {
         ctx: Context<UnsetClaimIndex>,
         claim_indices: Vec<u32>,
     ) -> Result<()> {
-        check_state!(ctx);
         only_owner!(ctx);
 
         for claim_index in claim_indices.iter() {
@@ -308,11 +291,14 @@ pub struct ExpandBitmap<'info> {
 
 #[derive(Accounts)]
 pub struct ApproveDelegate<'info> {
+    /// CHECK: We'll rawdog the state.
+    #[account(mut)]
+    pub state: AccountInfo<'info>,
     #[account(mut)]
     pub token_account: Account<'info, TokenAccount>, // Source SPL token account
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", token_account.key().as_ref(), STATE_ACCOUNT.as_ref()],
+        seeds = [b"delegate", token_account.key().as_ref(), state.key().as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
@@ -322,11 +308,14 @@ pub struct ApproveDelegate<'info> {
 
 #[derive(Accounts)]
 pub struct RevokeDelegate<'info> {
+    /// CHECK: We'll rawdog the state.
+    #[account(mut)]
+    pub state: AccountInfo<'info>,
     #[account(mut)]
     pub token_account: Account<'info, TokenAccount>, // Source SPL token account
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", token_account.key().as_ref(), STATE_ACCOUNT.as_ref()],
+        seeds = [b"delegate", token_account.key().as_ref(), state.key().as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
@@ -370,7 +359,7 @@ pub struct Claim<'info> {
     pub destination_token_account: AccountInfo<'info>,
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", source_token_account.key().as_ref(), STATE_ACCOUNT.as_ref()],
+        seeds = [b"delegate", source_token_account.key().as_ref(), state.key().as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
