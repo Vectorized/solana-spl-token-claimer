@@ -1,5 +1,9 @@
 # Solana SPL token claimer
 
+Similar in Solidity:
+
+https://gist.github.com/Vectorized/88987c8c42df60d512cdefd578f0e1c9
+
 ## Requirements
 
 - Rust
