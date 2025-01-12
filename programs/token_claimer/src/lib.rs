@@ -1,12 +1,15 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::keccak;
+use anchor_lang::solana_program::sysvar::clock::Clock;
 use anchor_lang::solana_program::sysvar::instructions::{load_instruction_at_checked, ID as IX_ID};
 use anchor_spl::token::{self, Approve, Revoke, Token, TokenAccount, Transfer};
-use anchor_lang::solana_program::sysvar::clock::Clock;
 
 pub mod utils;
 
 declare_id!("DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4");
+
+// March 9 2025 11:59 pm, update on deployment.
+const END_TIME: u32 = 1741564799;
 
 const DISCIMINATOR_LEN: usize = 8;
 const OWNER_OFFSET: usize = DISCIMINATOR_LEN; // Skip discriminator (8 bytes).
@@ -124,9 +127,16 @@ pub mod token_claimer {
     }
 
     /// Process a claim for tokens with a valid signature.
-    pub fn claim(ctx: Context<Claim>, claim_indices: Vec<u32>, total_amount: u64, expiry: u32) -> Result<()> {
-        let clock = Clock::get()?;
-        require!(clock.unix_timestamp < expiry.into(), CustomError::ClaimExpired);
+    pub fn claim(
+        ctx: Context<Claim>,
+        claim_indices: Vec<u32>,
+        total_amount: u64,
+        expiry: u32,
+    ) -> Result<()> {
+        require!(
+            Clock::get()?.unix_timestamp < expiry.into() && expiry <= END_TIME,
+            CustomError::ClaimExpired
+        );
         let solana_account_info = ctx.accounts.ix_sysvar.to_account_info();
         let message = keccak::hashv(&[
             keccak::hash(
@@ -184,8 +194,14 @@ pub mod token_claimer {
             CustomError::InvalidTokenProgram
         );
         // Transfer the tokens.
-        let binding = ctx.accounts.source_token_account.key();
-        let seeds = &[b"delegate", binding.as_ref(), &[ctx.bumps.delegate]];
+        let source_token_account_key = ctx.accounts.source_token_account.key();
+        let state_key = ctx.accounts.state.key();
+        let seeds = &[
+            b"delegate",
+            source_token_account_key.as_ref(),
+            state_key.as_ref(),
+            &[ctx.bumps.delegate],
+        ];
         let signer = &[&seeds[..]];
         let cpi_ctx = CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
@@ -275,11 +291,14 @@ pub struct ExpandBitmap<'info> {
 
 #[derive(Accounts)]
 pub struct ApproveDelegate<'info> {
+    /// CHECK: We'll rawdog the state.
+    #[account(mut)]
+    pub state: AccountInfo<'info>,
     #[account(mut)]
     pub token_account: Account<'info, TokenAccount>, // Source SPL token account
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", token_account.key().as_ref()],
+        seeds = [b"delegate", token_account.key().as_ref(), state.key().as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
@@ -289,11 +308,14 @@ pub struct ApproveDelegate<'info> {
 
 #[derive(Accounts)]
 pub struct RevokeDelegate<'info> {
+    /// CHECK: We'll rawdog the state.
+    #[account(mut)]
+    pub state: AccountInfo<'info>,
     #[account(mut)]
     pub token_account: Account<'info, TokenAccount>, // Source SPL token account
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", token_account.key().as_ref()],
+        seeds = [b"delegate", token_account.key().as_ref(), state.key().as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,
@@ -337,7 +359,7 @@ pub struct Claim<'info> {
     pub destination_token_account: AccountInfo<'info>,
     /// CHECK: The PDA delegated to transfer tokens.
     #[account(
-        seeds = [b"delegate", source_token_account.key().as_ref()],
+        seeds = [b"delegate", source_token_account.key().as_ref(), state.key().as_ref()],
         bump
     )]
     pub delegate: AccountInfo<'info>,

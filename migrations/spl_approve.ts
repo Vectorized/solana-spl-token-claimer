@@ -34,7 +34,7 @@ const loadPublicKey = (path) => {
   console.log("Source token account:", sourceTokenAccount.toBase58());    
 
   let [delegatePDA, delegateBump] = await anchor.web3.PublicKey.findProgramAddress(
-    [Buffer.from("delegate"), sourceTokenAccount.toBuffer()],
+    [Buffer.from("delegate"), sourceTokenAccount.toBuffer(), stateKeypair.publicKey.toBuffer()],
     program.programId
   );
 

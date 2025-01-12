@@ -25,12 +25,25 @@ import {
 import { assert, expect } from "chai";
 import * as nacl from "tweetnacl";
 import { keccak_256 } from '@noble/hashes/sha3';
+import * as fs from "fs";
+
 
 describe("token_claimer", () => {
   // Configure the client to use the local cluster.
   anchor.setProvider(anchor.AnchorProvider.env());
   const provider = anchor.AnchorProvider.env();
   const program = anchor.workspace.TokenClaimer as Program<TokenClaimer>;
+  
+  const loadKeyPair = (path) => {
+    return Keypair.fromSecretKey(
+      Uint8Array.from(JSON.parse(fs.readFileSync(path, "utf-8")))
+    )
+  };
+  
+  const loadPublicKey = (path) => {
+    const keyData = JSON.parse(fs.readFileSync(path, "utf-8"));
+    return new PublicKey(keyData);
+  };
 
   // Test accounts
   let owner = Keypair.generate();
@@ -38,7 +51,9 @@ describe("token_claimer", () => {
   let claimer = Keypair.generate();
   let claimSigner = Keypair.generate();
   let destination = Keypair.generate();
-  let stateAccount = Keypair.generate();
+  let stateAccount = loadKeyPair("keypairs/state_account.json");
+  let attacker = Keypair.generate();
+  let attackerStateAccount = Keypair.generate();
   let mint: PublicKey;
   let sourceTokenAccount: PublicKey;
 
@@ -128,6 +143,38 @@ describe("token_claimer", () => {
     expect(state.claimedBitmap.length).to.eq(80000);
 
     expect(state.claimSigner).to.deep.equal(claimSigner.publicKey);
+  });
+
+  it("Reinitializes (prepare attacker account)", async () => {
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(attacker.publicKey, 111 * anchor.web3.LAMPORTS_PER_SOL)
+    );
+
+    await program.methods
+    .initialize(attacker.publicKey)
+    .accounts({
+      state: attackerStateAccount.publicKey,
+      owner: attacker.publicKey,
+      systemProgram: SystemProgram.programId,
+    })
+    .signers([attacker, attackerStateAccount])
+    .rpc();
+
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(attackerStateAccount.publicKey, 111 * anchor.web3.LAMPORTS_PER_SOL)
+    );
+
+    for (let i = 0; i < 8; i++) {
+      await program.methods
+        .expandBitmap()
+        .accounts({
+          state: attackerStateAccount.publicKey,
+          owner: attacker.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([attacker])
+        .rpc();
+    }
   });
 
   it("Updates the claim signer", async () => {
@@ -253,7 +300,7 @@ describe("token_claimer", () => {
     );
     
     [delegatePDA, delegateBump] = await anchor.web3.PublicKey.findProgramAddress(
-      [Buffer.from("delegate"), sourceTokenAccount.toBuffer()],
+      [Buffer.from("delegate"), sourceTokenAccount.toBuffer(), stateAccount.publicKey.toBuffer()],
       program.programId
     );
 
@@ -300,6 +347,7 @@ describe("token_claimer", () => {
     await program.methods
       .approveDelegate(amount)
       .accounts({
+        state: stateAccount.publicKey,
         tokenAccount: sourceTokenAccount,
         delegate: delegatePDA,
         authority: owner.publicKey,
@@ -389,6 +437,85 @@ describe("token_claimer", () => {
     
     console.log("Destination Token Account Balance (after transfer):", 
       await getSplTokenBalance(provider.connection, destination.publicKey, mint)
+    );
+  });
+
+  it("Attacker cannot steal tokens", async () => {
+    const expectedDestinationTokenAccount = await getAssociatedTokenAddress(
+      mint, 
+      attacker.publicKey
+    );
+
+    const usedAmount = new anchor.BN(20);
+    const leftOverAmount = new anchor.BN(1000).mul(new anchor.BN(10).pow(new anchor.BN(9))).sub(usedAmount);
+
+    const claims = [
+      { claimIndex: 30110, amount: leftOverAmount.toNumber() },
+    ];
+    
+    let instructions = []; 
+    let claimIndices = [];
+    let totalAmount = 0;
+    for (let i = 0; i < claims.length; i++) {
+      const { claimIndex, amount } = claims[i];
+      totalAmount += amount;
+      claimIndices.push(claimIndex);
+    }
+    const clockAccountInfo = await program.provider.connection.getAccountInfo(
+      anchor.web3.SYSVAR_CLOCK_PUBKEY
+    );
+    const currentTimestamp = new anchor.BN(
+      clockAccountInfo.data.readBigInt64LE(8)
+    ).toNumber();
+    const expiry = currentTimestamp + 100000;
+    const message = keccak_256(Buffer.concat([
+      keccak_256(Buffer.concat(
+        claimIndices.map(i => (new anchor.BN(i)).toArrayLike(Buffer, "le", 4))
+      )),
+      attacker.publicKey.toBuffer(),
+      sourceTokenAccount.toBuffer(),
+      expectedDestinationTokenAccount.toBuffer(), 
+      (new anchor.BN(totalAmount)).toArrayLike(Buffer, "le", 8),
+      (new anchor.BN(expiry)).toArrayLike(Buffer, "le", 4),
+    ]));
+    const signature = nacl.sign.detached(message, attacker.secretKey);
+    instructions.push(
+      createAssociatedTokenAccountIdempotentInstruction(
+        attacker.publicKey,
+        expectedDestinationTokenAccount,
+        attacker.publicKey, 
+        mint 
+      ),
+      anchor.web3.Ed25519Program.createInstructionWithPublicKey({
+        publicKey: attacker.publicKey.toBytes(),
+        message: message,
+        signature: signature,
+      }),
+      await program.methods
+        .claim(claimIndices, new anchor.BN(totalAmount), expiry)
+        .accounts({
+          state: attackerStateAccount.publicKey,
+          claimer: attacker.publicKey,
+          sourceTokenAccount: sourceTokenAccount,
+          destinationTokenAccount: expectedDestinationTokenAccount,
+          ixSysvar: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        }).instruction()
+    );
+    
+    console.log("Source Token Account Balance (before attacker transfer):",
+      await getSplTokenBalance(provider.connection, owner.publicKey, mint)
+    );
+    
+    let reverted = false;
+    try {
+      await sendInstructions(attacker, instructions, null, true)
+    } catch (err) {
+      reverted = true;
+    }
+    assert(reverted);
+    
+    console.log("Source Token Account Balance (after failed attacker transfer):", 
+      await getSplTokenBalance(provider.connection, owner.publicKey, mint)
     );
   });
 });

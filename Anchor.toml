@@ -11,8 +11,8 @@ token_claimer = "DfmArRxQL4usBuAv4QFA7PVhXf3c1KLremcoDDww9DG4"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "https://api.devnet.solana.com"
-# cluster = "localnet"
+# cluster = "https://api.devnet.solana.com"
+cluster = "localnet"
 wallet = "./keypairs/deployer.json"
 
 [scripts]
