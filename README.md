@@ -4,6 +4,10 @@ Similar in Solidity:
 
 https://gist.github.com/Vectorized/88987c8c42df60d512cdefd578f0e1c9
 
+The Anchor program (smart contract) for this repo can be found here:  
+
+[`./programs/token_claimer/src/lib.rs`](programs/token_claimer/src/lib.rs)
+
 ## Requirements
 
 - Rust
